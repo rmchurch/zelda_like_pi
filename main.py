@@ -137,7 +137,12 @@ def main():
                 e.draw(canvas)
             player.draw(canvas)
             draw_stats_bar(canvas, player)
-
+            
+            #your dead bruh do better
+            if player.hp <= 0:
+                font = pygame.font.Font(None, 100)
+                text= font.render("your dead bruh do better",True,(0,0,0))
+                win.blit(text,text.get_rect(center=(400,300)))
         # scale to screen
         pygame.transform.scale(canvas, win.get_size(), win)
         pygame.display.flip()
