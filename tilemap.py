@@ -114,12 +114,26 @@ def draw_tile(surf, tid, x, y, phase=0):
 
 
 def room_solid_rects(room_grid):
+    """Build collision rectangles once, merging adjacent solid tiles by row.
+
+    The old version returned one Rect per solid tile.  On a Pi 1 that meant
+    dozens of Python-level collision checks for every movement axis of every
+    actor.  Horizontal runs represent the exact same solid area with far fewer
+    Rect objects.
+    """
     solids = []
     h = len(room_grid)
     w = len(room_grid[0]) if h else 0
     for j in range(h):
-        for i in range(w):
-            tid = room_grid[j][i]
-            if TILE_SOLID.get(tid, True):
-                solids.append(pygame.Rect(i * TILE, j * TILE, TILE, TILE))
+        run_start = None
+        for i in range(w + 1):
+            is_solid = False
+            if i < w:
+                is_solid = TILE_SOLID.get(room_grid[j][i], True)
+            if is_solid and run_start is None:
+                run_start = i
+            elif not is_solid and run_start is not None:
+                solids.append(pygame.Rect(run_start * TILE, j * TILE,
+                                          (i - run_start) * TILE, TILE))
+                run_start = None
     return solids
