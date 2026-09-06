@@ -169,7 +169,13 @@ def main():
     args = parse_args()
     win = init_pygame(args.no_audio, args.scale)
     clock = pygame.time.Clock()
-    canvas = pygame.Surface((BASE_W, BASE_H))
+    # At scale 1, draw straight to the display and skip the full-screen
+    # software scaling pass entirely.  Otherwise keep one converted logical
+    # canvas for fast blits.
+    if win.get_size() == (BASE_W, BASE_H):
+        canvas = win
+    else:
+        canvas = pygame.Surface((BASE_W, BASE_H)).convert()
     font = pygame.font.Font(None, 16)
     title_font = pygame.font.Font(None, 24)
     banner_font = pygame.font.Font(None, 15)
@@ -210,7 +216,9 @@ def main():
             player.update(keys, solids)
 
             # A key opens only the actual locked doorway the hero is touching.
-            room.unlock_near_player(player)
+            # Rebuild collision data only on the rare frame when a door changes.
+            if room.unlock_near_player(player):
+                solids = room.solid_rects()
 
             new_pos, changed = transition_if_needed(rooms, room_pos, room, player)
             if changed:
@@ -221,12 +229,17 @@ def main():
                 # Do not run old-room combat/pickups on the transition frame.
             else:
                 process_pickups(room, player)
-                solids = room.solid_rects()
-                for enemy in list(room.enemies):
+                # Reuse the same cached collision rectangles for every enemy.
+                # Iterate backwards so dead enemies can be removed without
+                # allocating a copy of the list every frame.
+                i = len(room.enemies) - 1
+                while i >= 0:
+                    enemy = room.enemies[i]
                     enemy.update(player, solids)
                     if enemy.dead:
                         add_drop(room, enemy)
-                        room.enemies.remove(enemy)
+                        room.enemies.pop(i)
+                    i -= 1
                 maybe_room_clear_reward(room)
 
             if banner_frames > 0:
@@ -238,7 +251,8 @@ def main():
         elif player.hp <= 0:
             draw_game_over(canvas, title_font, font)
 
-        pygame.transform.scale(canvas, win.get_size(), win)
+        if canvas is not win:
+            pygame.transform.scale(canvas, win.get_size(), win)
         pygame.display.flip()
         clock.tick(FPS)
 
