@@ -1,119 +1,257 @@
 from __future__ import division
 import pygame
-from settings import TILE, ROOM_W, ROOM_H, C_KEY, C_RUPEE
-from tilemap import draw_tile, T_GRASS, T_TREE, T_WALL, T_WATER, T_SAND, T_DOOR, T_LOCK, room_solid_rects
+from settings import TILE, ROOM_W, ROOM_H, C_KEY, C_RUPEE, C_HEART, C_GRASS_DARK
+from tilemap import (
+    draw_tile, room_solid_rects,
+    T_GRASS, T_TREE, T_WALL, T_WATER, T_SAND, T_DOOR, T_LOCK, T_ROCK, T_BUSH
+)
+
+SIDE_TILE = {
+    'N': (ROOM_W // 2, 0),
+    'S': (ROOM_W // 2, ROOM_H - 1),
+    'W': (0, ROOM_H // 2),
+    'E': (ROOM_W - 1, ROOM_H // 2),
+}
+
 
 class Room(object):
-    def __init__(self, grid, exits=None, locks=None, pickups=None, enemies=None):
+    def __init__(self, name, grid, exits=None, pickups=None, enemy_specs=None):
+        self.name = name
         self.grid = grid
-        self.exits = exits or {}    # {'N': True, 'S': True, ...}
-        self.locks = locks or []    # list of (i,j) lock tile locations
-        self.pickups = pickups or []# list of dicts: {'type': 'key'/'rupee', 'rect': Rect, 'alive': True}
-        self.enemies = enemies or []# list of enemy instances (spawned by main)
+        self.exits = exits or {}          # side -> destination (rx, ry)
+        self.pickups = pickups or []
+        self.enemy_specs = enemy_specs or []
+        self.enemies = []
+        self.spawned = False
+        self.cleared_reward = False
 
-    def draw(self, surf, lock_open=False):
-        for j,row in enumerate(self.grid):
-            for i,tid in enumerate(row):
-                draw_tile(surf, tid, i*TILE, j*TILE)
+    def draw(self, surf, phase=0):
+        for j, row in enumerate(self.grid):
+            for i, tid in enumerate(row):
+                draw_tile(surf, tid, i * TILE, j * TILE, phase)
 
-    def solid_rects(self, lock_open=False):
-        return room_solid_rects(self.grid, lock_open)
+    def solid_rects(self):
+        return room_solid_rects(self.grid)
+
+    def tile_for_side(self, side):
+        i, j = SIDE_TILE[side]
+        return self.grid[j][i]
+
+    def unlock_near_player(self, player):
+        if player.keys <= 0:
+            return False
+        probe = player.rect().inflate(8, 8)
+        for side in self.exits:
+            i, j = SIDE_TILE[side]
+            if self.grid[j][i] != T_LOCK:
+                continue
+            lock_rect = pygame.Rect(i * TILE, j * TILE, TILE, TILE)
+            if probe.colliderect(lock_rect):
+                self.grid[j][i] = T_DOOR
+                player.keys -= 1
+                return True
+        return False
+
 
 def make_rect_pickup(i, j):
-    return pygame.Rect(i*TILE+4, j*TILE+4, TILE-8, TILE-8)
+    return pygame.Rect(i * TILE + 4, j * TILE + 4, TILE - 8, TILE - 8)
 
-def base_room():
-    # border walls
-    g = [[T_GRASS for _ in range(ROOM_W)] for __ in range(ROOM_H)]
+
+def pickup(kind, i, j):
+    return {'type': kind, 'rect': make_rect_pickup(i, j), 'alive': True}
+
+
+def base_room(fill=T_GRASS):
+    g = [[fill for _ in range(ROOM_W)] for __ in range(ROOM_H)]
     for i in range(ROOM_W):
         g[0][i] = T_WALL
-        g[ROOM_H-1][i] = T_WALL
+        g[ROOM_H - 1][i] = T_WALL
     for j in range(ROOM_H):
         g[j][0] = T_WALL
-        g[j][ROOM_W-1] = T_WALL
+        g[j][ROOM_W - 1] = T_WALL
     return g
 
-def room_with_lake():
+
+def add_exit(g, side, locked=False):
+    i, j = SIDE_TILE[side]
+    g[j][i] = T_LOCK if locked else T_DOOR
+
+
+def make_meadow():
     g = base_room()
-    # lake
-    for j in range(5, 10):
+    for i, j in [(3, 3), (12, 3), (3, 11), (12, 11)]:
+        g[j][i] = T_TREE
+    for i, j in [(5, 4), (10, 10), (4, 8), (11, 6)]:
+        g[j][i] = T_BUSH
+    g[5][7] = T_ROCK
+    g[9][9] = T_ROCK
+    add_exit(g, 'E')
+    add_exit(g, 'S')
+    return g
+
+
+def make_forest():
+    g = base_room()
+    for j in range(2, ROOM_H - 2):
+        for i in range(2, ROOM_W - 2):
+            if ((i * 5 + j * 3) % 9 == 0) and not (6 <= i <= 10 and 5 <= j <= 9):
+                g[j][i] = T_TREE
+            elif ((i * 7 + j * 2) % 13 == 0):
+                g[j][i] = T_BUSH
+    add_exit(g, 'W')
+    add_exit(g, 'E')
+    add_exit(g, 'S')
+    add_exit(g, 'N', locked=True)
+    return g
+
+
+def make_lake():
+    g = base_room()
+    for j in range(4, 11):
         for i in range(4, 12):
             g[j][i] = T_WATER
-    # sand shore
     for i in range(3, 13):
-        g[4][i] = T_SAND
-        g[10][i] = T_SAND
-    for j in range(5,10):
+        g[3][i] = T_SAND
+        g[11][i] = T_SAND
+    for j in range(4, 11):
         g[j][3] = T_SAND
         g[j][12] = T_SAND
-    g[ROOM_H-1][ROOM_W//2] = T_DOOR
-    g[0][ROOM_W//2] = T_DOOR
+    # narrow sand causeway to a tiny island holding the key
+    for i in range(3, 10):
+        g[7][i] = T_SAND
+    add_exit(g, 'N')
+    add_exit(g, 'E')
     return g
 
-def room_with_forest():
+
+def make_ruins():
     g = base_room()
-    for j in range(3, 12, 2):
-        for i in range(3, 13, 2):
-            g[j][i] = T_TREE
-    g[0][ROOM_W//2] = T_DOOR
-    g[ROOM_H-1][ROOM_W//2] = T_DOOR
+    for i in range(3, 13):
+        if i not in (7, 8):
+            g[4][i] = T_WALL
+            g[10][i] = T_WALL
+    for j in range(5, 10):
+        g[j][3] = T_WALL
+        g[j][12] = T_WALL
+    for i, j in [(5, 6), (10, 6), (5, 9), (10, 9)]:
+        g[j][i] = T_ROCK
+    add_exit(g, 'W')
+    add_exit(g, 'N')
+    add_exit(g, 'E')
     return g
 
-def room_with_lock():
+
+def make_hill():
     g = base_room()
-    # locked door in north border
-    g[0][ROOM_W//2] = T_LOCK
-    # key in room
-    key_rect = make_rect_pickup(ROOM_W//2, ROOM_H//2)
-    return g, key_rect
+    for i, j in [(4, 3), (7, 2), (11, 4), (5, 10), (9, 11), (12, 8)]:
+        g[j][i] = T_ROCK
+    for i, j in [(3, 7), (7, 8), (10, 6), (12, 11)]:
+        g[j][i] = T_BUSH
+    add_exit(g, 'W')
+    add_exit(g, 'S')
+    return g
+
+
+def make_grove():
+    g = base_room()
+    for i in range(2, 14, 2):
+        g[3][i] = T_TREE
+        g[11][i] = T_TREE
+    for i in range(3, 13, 3):
+        g[7][i] = T_BUSH
+    add_exit(g, 'N')
+    add_exit(g, 'W')
+    return g
+
+
+def make_sanctuary():
+    g = base_room()
+    for i in range(2, 14):
+        g[3][i] = T_WALL
+    g[3][7] = T_DOOR
+    g[3][8] = T_DOOR
+    for i, j in [(4, 7), (11, 7), (5, 10), (10, 10)]:
+        g[j][i] = T_ROCK
+    add_exit(g, 'S')
+    return g
+
 
 def build_world():
-    # World is a small 2x2 grid of rooms indexed by (rx, ry)
     rooms = {}
 
-    # (0,0): start room (forest)
-    rooms[(0,0)] = Room(
-        grid=room_with_forest(),
-        exits={'N': True, 'S': True},
-        pickups=[{'type': 'rupee', 'rect': make_rect_pickup(2,2), 'alive': True}]
+    rooms[(0, 0)] = Room(
+        'Greenfield', make_meadow(),
+        exits={'E': (1, 0), 'S': (0, 1)},
+        pickups=[pickup('rupee', 2, 2)],
+        enemy_specs=[(70, 100, 0), (180, 135, 1)]
     )
 
-    # (0,1): lake room (south of start)
-    rooms[(0,1)] = Room(
-        grid=room_with_lake(),
-        exits={'N': True, 'S':True},
-        pickups=[{'type':'rupee', 'rect': make_rect_pickup(12,2), 'alive': True}]
+    rooms[(1, 0)] = Room(
+        'Old Woods', make_forest(),
+        exits={'W': (0, 0), 'E': (2, 0), 'S': (1, 1), 'N': (1, -1)},
+        pickups=[pickup('rupee', 13, 11)],
+        enemy_specs=[(78, 78, 0), (165, 70, 0), (130, 150, 1)]
     )
 
-    # (1,0): locked north exit, key inside
-    lock_grid, key_rect = room_with_lock()
-    rooms[(1,0)] = Room(
-        grid=lock_grid,
-        exits={'N': True},  # door is locked until you have a key
-        pickups=[{'type':'key', 'rect': key_rect, 'alive': True}]
+    rooms[(0, 1)] = Room(
+        'Mirror Pond', make_lake(),
+        exits={'N': (0, 0), 'E': (1, 1)},
+        pickups=[pickup('key', 7, 7), pickup('rupee', 13, 2)],
+        enemy_specs=[(45, 55, 0), (205, 170, 0)]
     )
 
-    # (1,-1): a simple north room beyond the lock
-    rN = base_room()
-    rN[ROOM_H-1][ROOM_W//2] = T_DOOR
-    rooms[(1,-1)] = Room(
-        grid=rN,
-        exits={'S': True},
-        pickups=[{'type':'rupee', 'rect': make_rect_pickup(10,10), 'alive': True}]
+    rooms[(1, 1)] = Room(
+        'Broken Court', make_ruins(),
+        exits={'W': (0, 1), 'N': (1, 0), 'E': (2, 1)},
+        pickups=[pickup('heart', 8, 7)],
+        enemy_specs=[(82, 116, 1), (172, 116, 1), (128, 170, 0)]
+    )
+
+    rooms[(2, 0)] = Room(
+        'Stone Hill', make_hill(),
+        exits={'W': (1, 0), 'S': (2, 1)},
+        pickups=[pickup('rupee', 12, 3)],
+        enemy_specs=[(80, 75, 1), (175, 155, 0)]
+    )
+
+    rooms[(2, 1)] = Room(
+        'Whisper Grove', make_grove(),
+        exits={'N': (2, 0), 'W': (1, 1)},
+        pickups=[pickup('rupee', 8, 5)],
+        enemy_specs=[(65, 125, 0), (188, 125, 0), (126, 180, 1)]
+    )
+
+    rooms[(1, -1)] = Room(
+        'Hidden Shrine', make_sanctuary(),
+        exits={'S': (1, 0)},
+        pickups=[pickup('heart', 8, 8), pickup('rupee', 7, 8), pickup('rupee', 9, 8)],
+        enemy_specs=[]
     )
 
     return rooms
+
 
 def draw_pickups(surf, pickups):
     for p in pickups:
         if not p.get('alive', True):
             continue
+        r = p['rect']
         if p['type'] == 'key':
-            pygame.draw.rect(surf, C_KEY, p['rect'])
+            pygame.draw.rect(surf, C_KEY, (r.centerx - 1, r.top, 3, 7))
+            pygame.draw.rect(surf, C_KEY, (r.centerx - 3, r.top, 6, 3))
+            pygame.draw.rect(surf, C_KEY, (r.centerx + 1, r.bottom - 3, 4, 2))
+            pygame.draw.rect(surf, (126, 94, 30), (r.centerx, r.top + 1, 1, 1))
         elif p['type'] == 'rupee':
             pygame.draw.polygon(surf, C_RUPEE, [
-                (p['rect'].centerx, p['rect'].top),
-                (p['rect'].right,    p['rect'].centery-2),
-                (p['rect'].centerx,  p['rect'].bottom),
-                (p['rect'].left,     p['rect'].centery-2),
+                (r.centerx, r.top), (r.right - 1, r.top + 3),
+                (r.right - 2, r.bottom - 2), (r.centerx, r.bottom),
+                (r.left + 2, r.bottom - 2), (r.left + 1, r.top + 3)
             ])
+            pygame.draw.line(surf, (124, 246, 224),
+                             (r.centerx - 1, r.top + 2), (r.centerx - 1, r.bottom - 2))
+        elif p['type'] == 'heart':
+            pygame.draw.rect(surf, C_HEART, (r.left + 1, r.top + 1, 3, 3))
+            pygame.draw.rect(surf, C_HEART, (r.right - 4, r.top + 1, 3, 3))
+            pygame.draw.rect(surf, C_HEART, (r.left + 1, r.top + 3, 6, 3))
+            pygame.draw.rect(surf, C_HEART, (r.left + 2, r.top + 6, 4, 2))
+            pygame.draw.rect(surf, C_GRASS_DARK, (r.left, r.top, 1, 1))
