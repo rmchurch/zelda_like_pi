@@ -64,3 +64,7 @@ utils.py      small helpers and frame timers
 ## Design goal
 
 The refresh is deliberately closer to an early-console adventure game than to a modern high-resolution RPG: low logical resolution, hard pixel edges, limited colors, readable silhouettes, simple room-to-room exploration, and very low CPU/GPU requirements.
+
+## Old Raspberry Pi performance
+
+The default is tuned for older hardware at 30 FPS and 2x scale. Static room art, collision geometry, HUD text, and actor frames are cached. For the slowest Pi models, use `python main.py --scale 1 --no-audio`; scale 1 skips the per-frame software scaling pass entirely.
