@@ -1,45 +1,91 @@
 from __future__ import division
+import math
 import pygame
-from settings import TILE, PLAYER_SPEED, ENEMY_SPEED, SLASH_TIME, INVULN_TIME, C_PLAYER, C_SWORD, C_ENEMY1, C_ENEMY2, BOOMERANG_SPEED, BOOMERANG_RANGE
-from settings import C_WOOD_DARK, C_WOOD_LIGHT, C_GUARD_GOLD
+from settings import (
+    TILE, PLAYER_SPEED, ENEMY_SPEED, SLASH_TIME, ATTACK_COOLDOWN,
+    INVULN_TIME, ENEMY_HURT_TIME, ENEMY_STUN_TIME,
+    BOOMERANG_SPEED, BOOMERANG_RANGE,
+    C_TUNIC, C_TUNIC_DARK, C_SKIN, C_HAIR, C_BOOT, C_BELT,
+    C_SHIELD, C_SHIELD_TRIM,
+    C_ENEMY1, C_ENEMY2, C_ENEMY_DARK,
+    C_WOOD_DARK, C_WOOD_LIGHT, C_GUARD_GOLD, WHITE, BLACK
+)
 from utils import Timer, clamp
 
-DIR_UP, DIR_RIGHT, DIR_DOWN, DIR_LEFT = 0,1,2,3
+DIR_UP, DIR_RIGHT, DIR_DOWN, DIR_LEFT = 0, 1, 2, 3
+
 
 def dir_vec(d):
-    return [(0,-1), (1,0), (0,1), (-1,0)][d]
+    return [(0, -1), (1, 0), (0, 1), (-1, 0)][d]
+
+
+def _rect(surf, color, x, y, w, h):
+    pygame.draw.rect(surf, color, (int(x), int(y), int(w), int(h)))
+
+
+def _move_rect_axis(owner, dx, dy, solids):
+    if dx:
+        test = owner.rect()
+        test.x += int(round(dx))
+        if not any(test.colliderect(s) for s in solids):
+            owner.x += dx
+    if dy:
+        test = owner.rect()
+        test.y += int(round(dy))
+        if not any(test.colliderect(s) for s in solids):
+            owner.y += dy
+
 
 class Boomerang(object):
     def __init__(self, x, y, d):
         self.x, self.y = x, y
         self.dir = d
-        self.t = 0
+        self.distance = 0.0
+        self.returning = False
         self.dead = False
+        self.spin = 0
+        self.hit_ids = set()
+
     def rect(self):
-        return pygame.Rect(int(self.x)-3, int(self.y)-3, 6, 6)
+        return pygame.Rect(int(self.x) - 4, int(self.y) - 4, 8, 8)
+
     def update(self, player_pos):
-        self.t += 1
-        dx, dy = dir_vec(self.dir)
-        # go out then back
-        if self.t * BOOMERANG_SPEED < BOOMERANG_RANGE:
+        self.spin = (self.spin + 1) % 12
+        if not self.returning:
+            dx, dy = dir_vec(self.dir)
             self.x += dx * BOOMERANG_SPEED
             self.y += dy * BOOMERANG_SPEED
+            self.distance += BOOMERANG_SPEED
+            if self.distance >= BOOMERANG_RANGE:
+                self.returning = True
         else:
-            # home back to player
             px, py = player_pos
-            vx = clamp(px - self.x, -BOOMERANG_SPEED, BOOMERANG_SPEED)
-            vy = clamp(py - self.y, -BOOMERANG_SPEED, BOOMERANG_SPEED)
-            self.x += vx
-            self.y += vy
-            if abs(px - self.x) < 6 and abs(py - self.y) < 6:
+            vx = px - self.x
+            vy = py - self.y
+            dist = math.sqrt(vx * vx + vy * vy)
+            if dist <= BOOMERANG_SPEED + 4:
                 self.dead = True
+                return
+            if dist > 0:
+                self.x += (vx / dist) * BOOMERANG_SPEED
+                self.y += (vy / dist) * BOOMERANG_SPEED
+
     def draw(self, surf):
-        pygame.draw.rect(surf, (220,220,255), self.rect())
+        x, y = int(self.x), int(self.y)
+        if (self.spin // 3) % 2 == 0:
+            _rect(surf, C_WOOD_LIGHT, x - 4, y - 3, 7, 2)
+            _rect(surf, C_WOOD_LIGHT, x + 1, y - 3, 2, 6)
+            _rect(surf, C_WOOD_DARK, x - 4, y - 2, 2, 2)
+        else:
+            _rect(surf, C_WOOD_LIGHT, x - 3, y - 4, 2, 7)
+            _rect(surf, C_WOOD_LIGHT, x - 3, y + 1, 6, 2)
+            _rect(surf, C_WOOD_DARK, x - 2, y - 4, 2, 2)
+
 
 class Player(object):
     def __init__(self, x, y):
-        self.x, self.y = x, y
-        self.w, self.h = 12, 12
+        self.x, self.y = float(x), float(y)
+        self.w, self.h = 10, 11
         self.dir = DIR_DOWN
         self.hp = 6
         self.max_hp = 6
@@ -47,202 +93,338 @@ class Player(object):
         self.rupees = 0
         self.invuln = Timer(0)
         self.slash_timer = Timer(0)
+        self.attack_cooldown = Timer(0)
         self.boomerangs = []
+        self.attack_id = 0
+        self.walk_clock = 0
+        self.moving = False
 
     def rect(self):
-        return pygame.Rect(int(self.x)-self.w//2, int(self.y)-self.h//2, self.w, self.h)
+        # Collision box hugs the torso/feet, not the whole 16x16 sprite/cap.
+        return pygame.Rect(int(self.x) - self.w // 2,
+                           int(self.y) - self.h // 2 + 1,
+                           self.w, self.h)
 
     def center_tile(self):
-        return int(self.x//TILE), int(self.y//TILE)
+        return int(self.x // TILE), int(self.y // TILE)
 
     def try_move(self, dx, dy, solids):
-        # attempt axis-separated movement for stable collisions
-        r = self.rect()
-        # X
-        r.x += int(dx)
-        if not any(r.colliderect(s) for s in solids):
-            self.x += dx
-        # Y
-        r = self.rect()
-        r.y += int(dy)
-        if not any(r.colliderect(s) for s in solids):
-            self.y += dy
+        _move_rect_axis(self, dx, dy, solids)
 
     def attack_rect(self):
         if not self.slash_timer.active():
             return None
-        ox, oy = dir_vec(self.dir)
-        r = self.rect().copy()
-        # place a small slash rect in front
+        body = self.rect()
         if self.dir == DIR_UP:
-            r.y -= 10; r.height = 8
-        elif self.dir == DIR_DOWN:
-            r.y += r.height; r.height = 8
-        elif self.dir == DIR_LEFT:
-            r.x -= 10; r.width = 8
-        else:
-            r.x += r.width; r.width = 8
-        return r
+            return pygame.Rect(body.centerx - 4, body.top - 13, 8, 14)
+        if self.dir == DIR_DOWN:
+            return pygame.Rect(body.centerx - 4, body.bottom - 1, 8, 14)
+        if self.dir == DIR_LEFT:
+            return pygame.Rect(body.left - 13, body.centery - 4, 14, 8)
+        return pygame.Rect(body.right - 1, body.centery - 4, 14, 8)
 
     def update(self, keys, solids):
         self.invuln.tick()
         self.slash_timer.tick()
+        self.attack_cooldown.tick()
 
-        dx = dy = 0
+        dx = dy = 0.0
         if keys[pygame.K_LEFT]:
-            dx -= PLAYER_SPEED; self.dir = DIR_LEFT
+            dx -= 1.0
         if keys[pygame.K_RIGHT]:
-            dx += PLAYER_SPEED; self.dir = DIR_RIGHT
+            dx += 1.0
         if keys[pygame.K_UP]:
-            dy -= PLAYER_SPEED; self.dir = DIR_UP
+            dy -= 1.0
         if keys[pygame.K_DOWN]:
-            dy += PLAYER_SPEED; self.dir = DIR_DOWN
-        #normalize diagonal (optional for old hardware skip for simplicity)
+            dy += 1.0
 
-        self.try_move(dx, dy, solids)
+        self.moving = (dx != 0.0 or dy != 0.0)
+        if self.moving:
+            # Prefer the stronger axis when choosing facing during diagonal movement.
+            if abs(dx) >= abs(dy) and dx != 0:
+                self.dir = DIR_RIGHT if dx > 0 else DIR_LEFT
+            elif dy != 0:
+                self.dir = DIR_DOWN if dy > 0 else DIR_UP
 
-        # boomerangs
+            if dx and dy:
+                dx *= 0.70710678
+                dy *= 0.70710678
+
+            speed = PLAYER_SPEED * (0.72 if self.slash_timer.active() else 1.0)
+            self.try_move(dx * speed, dy * speed, solids)
+            self.walk_clock += 1
+        else:
+            self.walk_clock = 0
+
         for b in list(self.boomerangs):
             b.update((self.x, self.y))
             if b.dead:
                 self.boomerangs.remove(b)
 
     def take_hit(self, dmg=1, knockback=None):
-        if self.invuln.active():
-            return
+        if self.invuln.active() or self.hp <= 0:
+            return False
         self.hp = max(0, self.hp - dmg)
         self.invuln.start(INVULN_TIME)
         if knockback:
-            self.x += knockback[0]
-            self.y += knockback[1]
+            self.x += clamp(knockback[0], -5, 5)
+            self.y += clamp(knockback[1], -5, 5)
+        return True
+
+    def heal(self, amount=2):
+        self.hp = min(self.max_hp, self.hp + amount)
 
     def attack(self):
-        if not self.slash_timer.active():
-            self.slash_timer.start(SLASH_TIME)
+        if self.attack_cooldown.active() or self.hp <= 0:
+            return False
+        self.attack_id += 1
+        self.slash_timer.start(SLASH_TIME)
+        self.attack_cooldown.start(SLASH_TIME + ATTACK_COOLDOWN)
+        return True
 
     def throw_boomerang(self):
-        # only one at a time
+        if self.hp <= 0 or self.slash_timer.active():
+            return False
         if len(self.boomerangs) == 0:
-            bx, by = self.x, self.y
-            self.boomerangs.append(Boomerang(bx, by, self.dir))
+            self.boomerangs.append(Boomerang(self.x, self.y, self.dir))
+            return True
+        return False
+
+    def _draw_shadow(self, surf, sx, sy):
+        _rect(surf, (28, 74, 38), sx + 4, sy + 14, 9, 2)
+
+    def _draw_front(self, surf, sx, sy, step):
+        # Long green cap and brown hair
+        _rect(surf, C_TUNIC_DARK, sx + 4, sy, 7, 2)
+        _rect(surf, C_TUNIC, sx + 3, sy + 2, 9, 3)
+        _rect(surf, C_TUNIC, sx + 1, sy + 3, 4, 2)
+        _rect(surf, C_HAIR, sx + 4, sy + 5, 8, 2)
+        # face
+        _rect(surf, C_SKIN, sx + 5, sy + 6, 7, 4)
+        _rect(surf, BLACK, sx + 6, sy + 7, 1, 1)
+        _rect(surf, BLACK, sx + 10, sy + 7, 1, 1)
+        # ears/hands
+        _rect(surf, C_SKIN, sx + 3, sy + 7, 2, 2)
+        _rect(surf, C_SKIN, sx + 12, sy + 7, 2, 2)
+        # tunic and belt
+        _rect(surf, C_TUNIC_DARK, sx + 4, sy + 10, 9, 4)
+        _rect(surf, C_TUNIC, sx + 5, sy + 10, 7, 3)
+        _rect(surf, C_BELT, sx + 5, sy + 13, 7, 1)
+        # legs alternate one pixel for walking
+        _rect(surf, C_SKIN, sx + 5, sy + 14, 2, 1 + step)
+        _rect(surf, C_SKIN, sx + 10, sy + 14 + step, 2, 1)
+        _rect(surf, C_BOOT, sx + 4, sy + 15, 3, 1)
+        _rect(surf, C_BOOT, sx + 10, sy + 15, 3, 1)
+
+    def _draw_back(self, surf, sx, sy, step):
+        _rect(surf, C_TUNIC_DARK, sx + 4, sy, 7, 2)
+        _rect(surf, C_TUNIC, sx + 3, sy + 2, 9, 4)
+        _rect(surf, C_TUNIC, sx + 1, sy + 2, 4, 2)
+        _rect(surf, C_HAIR, sx + 4, sy + 5, 8, 3)
+        _rect(surf, C_TUNIC_DARK, sx + 4, sy + 8, 9, 6)
+        # shield on back
+        _rect(surf, C_SHIELD_TRIM, sx + 6, sy + 8, 6, 6)
+        _rect(surf, C_SHIELD, sx + 7, sy + 9, 4, 5)
+        _rect(surf, C_SHIELD_TRIM, sx + 8, sy + 10, 2, 1)
+        _rect(surf, C_BELT, sx + 4, sy + 13, 9, 1)
+        _rect(surf, C_BOOT, sx + 4 + step, sy + 15, 3, 1)
+        _rect(surf, C_BOOT, sx + 10 - step, sy + 15, 3, 1)
+
+    def _draw_side(self, surf, sx, sy, facing_right, step):
+        # cap points behind the hero
+        if facing_right:
+            _rect(surf, C_TUNIC_DARK, sx + 4, sy, 7, 2)
+            _rect(surf, C_TUNIC, sx + 3, sy + 2, 9, 3)
+            _rect(surf, C_TUNIC, sx + 1, sy + 3, 4, 2)
+            _rect(surf, C_HAIR, sx + 5, sy + 5, 6, 3)
+            _rect(surf, C_SKIN, sx + 8, sy + 6, 5, 4)
+            _rect(surf, BLACK, sx + 11, sy + 7, 1, 1)
+            _rect(surf, C_SKIN, sx + 13, sy + 8, 2, 1)
+            _rect(surf, C_TUNIC_DARK, sx + 5, sy + 10, 8, 4)
+            _rect(surf, C_SHIELD_TRIM, sx + 4, sy + 9, 3, 5)
+            _rect(surf, C_SHIELD, sx + 4, sy + 10, 2, 3)
+        else:
+            _rect(surf, C_TUNIC_DARK, sx + 5, sy, 7, 2)
+            _rect(surf, C_TUNIC, sx + 4, sy + 2, 9, 3)
+            _rect(surf, C_TUNIC, sx + 11, sy + 3, 4, 2)
+            _rect(surf, C_HAIR, sx + 5, sy + 5, 6, 3)
+            _rect(surf, C_SKIN, sx + 3, sy + 6, 5, 4)
+            _rect(surf, BLACK, sx + 4, sy + 7, 1, 1)
+            _rect(surf, C_SKIN, sx + 1, sy + 8, 2, 1)
+            _rect(surf, C_TUNIC_DARK, sx + 4, sy + 10, 8, 4)
+            _rect(surf, C_SHIELD_TRIM, sx + 11, sy + 9, 3, 5)
+            _rect(surf, C_SHIELD, sx + 12, sy + 10, 2, 3)
+        _rect(surf, C_BELT, sx + 5, sy + 13, 7, 1)
+        _rect(surf, C_BOOT, sx + 5 + step, sy + 15, 3, 1)
+        _rect(surf, C_BOOT, sx + 10 - step, sy + 15, 3, 1)
 
     def draw(self, surf):
-        r = self.rect()
-        # body
-        col = C_PLAYER if (self.invuln.t//2)%2==0 else (180,180,180)
-        pygame.draw.rect(surf, col, r)
-        # face direction indicator
-        if self.dir == DIR_UP:
-            pygame.draw.line(surf, (0,0,0), (r.centerx-3, r.top+2), (r.centerx+3, r.top+2))
-        elif self.dir == DIR_DOWN:
-            pygame.draw.line(surf, (0,0,0), (r.centerx-3, r.bottom-2), (r.centerx+3, r.bottom-2))
-        elif self.dir == DIR_LEFT:
-            pygame.draw.line(surf, (0,0,0), (r.left+2, r.centery-3), (r.left+2, r.centery+3))
-        else:
-            pygame.draw.line(surf, (0,0,0), (r.right-2, r.centery-3), (r.right-2, r.centery+3))
+        sx, sy = int(self.x) - 8, int(self.y) - 9
+        step = 1 if self.moving and ((self.walk_clock // 6) % 2) else 0
+        self._draw_shadow(surf, sx, sy)
 
-        # sword slash
-        #ar = self.attack_rect()
-        #if ar:
-        #    pygame.draw.rect(surf, C_SWORD, ar)
+        # Zelda-like flicker: skip the body on alternating invulnerability frames.
+        body_visible = not self.invuln.active() or ((self.invuln.t // 3) % 2 == 0)
+        if body_visible:
+            if self.dir == DIR_DOWN:
+                self._draw_front(surf, sx, sy, step)
+            elif self.dir == DIR_UP:
+                self._draw_back(surf, sx, sy, step)
+            elif self.dir == DIR_RIGHT:
+                self._draw_side(surf, sx, sy, True, step)
+            else:
+                self._draw_side(surf, sx, sy, False, step)
+
         if self.slash_timer.active():
-            self.draw_wooden_sword(surf)
-
-        # boomerang
+            self.draw_sword(surf)
         for b in self.boomerangs:
             b.draw(surf)
 
-    def draw_wooden_sword(self, surf):
-        # Only visible while slashing; collision still uses attack_rect()
-        if not self.slash_timer.active():
-            return
+    def draw_sword(self, surf):
+        body = self.rect()
+        cx, cy = body.centerx, body.centery
+        blade = C_WOOD_LIGHT
+        shine = (222, 158, 80)
+        if self.dir == DIR_UP:
+            _rect(surf, C_WOOD_DARK, cx - 1, body.top - 1, 2, 4)
+            _rect(surf, C_GUARD_GOLD, cx - 4, body.top - 3, 8, 2)
+            _rect(surf, blade, cx - 2, body.top - 13, 4, 10)
+            _rect(surf, shine, cx - 1, body.top - 12, 1, 8)
+            _rect(surf, blade, cx - 1, body.top - 15, 2, 2)
+        elif self.dir == DIR_DOWN:
+            _rect(surf, C_WOOD_DARK, cx - 1, body.bottom - 3, 2, 4)
+            _rect(surf, C_GUARD_GOLD, cx - 4, body.bottom + 1, 8, 2)
+            _rect(surf, blade, cx - 2, body.bottom + 3, 4, 10)
+            _rect(surf, shine, cx - 1, body.bottom + 4, 1, 8)
+            _rect(surf, blade, cx - 1, body.bottom + 13, 2, 2)
+        elif self.dir == DIR_LEFT:
+            _rect(surf, C_WOOD_DARK, body.left - 2, cy - 1, 4, 2)
+            _rect(surf, C_GUARD_GOLD, body.left - 4, cy - 4, 2, 8)
+            _rect(surf, blade, body.left - 14, cy - 2, 10, 4)
+            _rect(surf, shine, body.left - 13, cy - 1, 8, 1)
+            _rect(surf, blade, body.left - 16, cy - 1, 2, 2)
+        else:
+            _rect(surf, C_WOOD_DARK, body.right - 2, cy - 1, 4, 2)
+            _rect(surf, C_GUARD_GOLD, body.right + 2, cy - 4, 2, 8)
+            _rect(surf, blade, body.right + 4, cy - 2, 10, 4)
+            _rect(surf, shine, body.right + 5, cy - 1, 8, 1)
+            _rect(surf, blade, body.right + 14, cy - 1, 2, 2)
 
-        r = self.rect()
-        cx, cy = r.centerx, r.centery
-
-        # pixel sizes (tweak to taste)
-        blade_w, blade_h = 4, 12   # thickness x length
-        guard_w, guard_h = 8, 2
-        grip_w,  grip_h  = 4, 4
-
-        if self.dir == 0:  # DIR_UP
-            blade = pygame.Rect(cx - blade_w//2, r.top - blade_h - 2, blade_w, blade_h)
-            guard = pygame.Rect(cx - guard_w//2, r.top - 2,            guard_w, guard_h)
-            grip  = pygame.Rect(cx - grip_w//2,  r.top + 2,            grip_w,  grip_h)
-        elif self.dir == 2:  # DIR_DOWN
-            guard = pygame.Rect(cx - guard_w//2, r.bottom,             guard_w, guard_h)
-            blade = pygame.Rect(cx - blade_w//2, r.bottom + guard_h,   blade_w, blade_h)
-            grip  = pygame.Rect(cx - grip_w//2,  r.bottom - grip_h,    grip_w,  grip_h)
-        elif self.dir == 3:  # DIR_LEFT
-            blade = pygame.Rect(r.left - blade_h - 2, cy - blade_w//2, blade_h, blade_w)
-            guard = pygame.Rect(r.left - 2,           cy - guard_w//2, 2,       guard_w)
-            grip  = pygame.Rect(r.left + 0,           cy - grip_w//2,  grip_h,  grip_w)  # small square by body
-        else:  # DIR_RIGHT (1)
-            guard = pygame.Rect(r.right,              cy - guard_w//2, 2,       guard_w)
-            blade = pygame.Rect(r.right + 2,          cy - blade_w//2, blade_h, blade_w)
-            grip  = pygame.Rect(r.right - grip_h,     cy - grip_w//2,  grip_h,  grip_w)
-
-        # draw: blade, guard, grip
-        pygame.draw.rect(surf, C_WOOD_LIGHT, blade)
-        pygame.draw.rect(surf, C_GUARD_GOLD, guard)
-        pygame.draw.rect(surf, C_WOOD_DARK,  grip)
 
 class Enemy(object):
     def __init__(self, x, y, kind=0):
-        self.x, self.y = x, y
+        self.x, self.y = float(x), float(y)
         self.kind = kind
-        self.w, self.h = 12, 12
-        self.hp = 2 if kind==0 else 3
+        self.w, self.h = (12, 10) if kind == 0 else (12, 12)
+        self.hp = 2 if kind == 0 else 3
         self.t = 0
         self.dead = False
+        self.facing = DIR_DOWN
+        self.hurt_timer = Timer(0)
+        self.stun_timer = Timer(0)
+        self.last_attack_id = -1
+        self.drop_type = None
 
     def rect(self):
-        return pygame.Rect(int(self.x)-self.w//2, int(self.y)-self.h//2, self.w, self.h)
+        return pygame.Rect(int(self.x) - self.w // 2,
+                           int(self.y) - self.h // 2,
+                           self.w, self.h)
+
+    def _choose_motion(self, player):
+        vx = player.x - self.x
+        vy = player.y - self.y
+        dist2 = vx * vx + vy * vy
+
+        if dist2 < 95 * 95:
+            if abs(vx) > abs(vy):
+                self.facing = DIR_RIGHT if vx > 0 else DIR_LEFT
+            else:
+                self.facing = DIR_DOWN if vy > 0 else DIR_UP
+            dist = math.sqrt(dist2) if dist2 > 0 else 1.0
+            return (vx / dist) * ENEMY_SPEED, (vy / dist) * ENEMY_SPEED
+
+        # deterministic four-direction wandering keeps old-Pi CPU cost tiny.
+        cycle = (self.t // 70 + self.kind * 2) % 4
+        self.facing = [DIR_RIGHT, DIR_DOWN, DIR_LEFT, DIR_UP][cycle]
+        dx, dy = dir_vec(self.facing)
+        return dx * ENEMY_SPEED * 0.72, dy * ENEMY_SPEED * 0.72
+
+    def _hurt(self, damage, player):
+        self.hp -= damage
+        self.hurt_timer.start(ENEMY_HURT_TIME)
+        self.stun_timer.start(12)
+        dx = self.x - player.x
+        dy = self.y - player.y
+        mag = math.sqrt(dx * dx + dy * dy) or 1.0
+        self.x += (dx / mag) * 4.0
+        self.y += (dy / mag) * 4.0
+        if self.hp <= 0:
+            self.dead = True
+            code = (int(self.x) + int(self.y) + self.kind * 3) % 5
+            self.drop_type = 'heart' if code == 0 else ('rupee' if code in (1, 2, 3) else None)
 
     def update(self, player, solids):
         self.t += 1
-        # simple wander & chase
-        if self.t % 60 < 30:
-            # drift toward player a bit
-            dx = ENEMY_SPEED if player.x > self.x else -ENEMY_SPEED
-            dy = ENEMY_SPEED if player.y > self.y else -ENEMY_SPEED
-        else:
-            # random-ish wiggle
-            dx = ( (self.t%7)-3 ) * 0.1
-            dy = ( (self.t%5)-2 ) * 0.1
+        self.hurt_timer.tick()
+        self.stun_timer.tick()
 
-        r = self.rect()
-        r.x += int(dx)
-        if not any(r.colliderect(s) for s in solids):
-            self.x += dx
-        r = self.rect()
-        r.y += int(dy)
-        if not any(r.colliderect(s) for s in solids):
-            self.y += dy
+        if not self.stun_timer.active() and not self.dead:
+            dx, dy = self._choose_motion(player)
+            _move_rect_axis(self, dx, dy, solids)
 
-        # contact damage
         if self.rect().colliderect(player.rect()):
-            player.take_hit(1, ( (player.x-self.x)*0.2, (player.y-self.y)*0.2 ))
+            dx = player.x - self.x
+            dy = player.y - self.y
+            mag = math.sqrt(dx * dx + dy * dy) or 1.0
+            player.take_hit(1, ((dx / mag) * 4, (dy / mag) * 4))
 
-        # hit by sword
         ar = player.attack_rect()
-        if ar and ar.colliderect(self.rect()):
-            self.hp -= 1
-            if self.hp <= 0:
-                self.dead = True
+        if (ar and ar.colliderect(self.rect()) and
+                self.last_attack_id != player.attack_id and not self.dead):
+            self.last_attack_id = player.attack_id
+            self._hurt(1, player)
 
-        # hit by boomerang (stuns/kills weak)
+        # Boomerang stuns rather than deleting enemies outright.
         for b in list(player.boomerangs):
-            if b.rect().colliderect(self.rect()):
-                self.hp -= self.hp
-                player.boomerangs.remove(b)
-                if self.hp <= 0:
-                    self.dead = True
+            marker = id(self)
+            if marker not in b.hit_ids and b.rect().colliderect(self.rect()):
+                b.hit_ids.add(marker)
+                b.returning = True
+                self.stun_timer.start(ENEMY_STUN_TIME)
 
     def draw(self, surf):
         r = self.rect()
-        col = C_ENEMY1 if self.kind==0 else C_ENEMY2
-        pygame.draw.rect(surf, col, r)
-        # eyes
-        pygame.draw.rect(surf, (0,0,0), (r.x+3, r.y+3, 2, 2))
-        pygame.draw.rect(surf, (0,0,0), (r.right-5, r.y+3, 2, 2))
+        flash = self.hurt_timer.active() and ((self.hurt_timer.t // 2) % 2 == 0)
+        main = WHITE if flash else (C_ENEMY1 if self.kind == 0 else C_ENEMY2)
+        x, y = r.centerx - 8, r.centery - 8
+
+        # shadow
+        _rect(surf, (34, 68, 32), x + 3, y + 13, 11, 2)
+
+        if self.kind == 0:
+            # Small red snouted crawler: chunky, readable 16x16 silhouette.
+            _rect(surf, C_ENEMY_DARK, x + 4, y + 3, 8, 10)
+            _rect(surf, main, x + 3, y + 4, 10, 8)
+            _rect(surf, main, x + 5, y + 2, 6, 3)
+            _rect(surf, C_ENEMY_DARK, x + 1, y + 6, 3, 4)
+            _rect(surf, C_ENEMY_DARK, x + 12, y + 6, 3, 4)
+            _rect(surf, BLACK, x + 5, y + 5, 2, 2)
+            _rect(surf, BLACK, x + 10, y + 5, 2, 2)
+            # square snout and feet
+            _rect(surf, (236, 116, 74) if not flash else WHITE, x + 6, y + 8, 5, 3)
+            _rect(surf, C_ENEMY_DARK, x + 3, y + 12, 3, 2)
+            _rect(surf, C_ENEMY_DARK, x + 10, y + 12, 3, 2)
+        else:
+            # Orange shield goblin/guard with ears and a helmet-like brow.
+            _rect(surf, C_ENEMY_DARK, x + 4, y + 2, 9, 12)
+            _rect(surf, main, x + 3, y + 3, 10, 9)
+            pygame.draw.polygon(surf, main, [(x + 3, y + 5), (x, y + 3), (x + 3, y + 8)])
+            pygame.draw.polygon(surf, main, [(x + 13, y + 5), (x + 16, y + 3), (x + 13, y + 8)])
+            _rect(surf, C_ENEMY_DARK, x + 4, y + 3, 8, 2)
+            _rect(surf, BLACK, x + 5, y + 6, 2, 2)
+            _rect(surf, BLACK, x + 10, y + 6, 2, 2)
+            _rect(surf, C_ENEMY_DARK, x + 7, y + 9, 3, 1)
+            _rect(surf, C_SHIELD_TRIM, x + 9, y + 10, 5, 5)
+            _rect(surf, C_SHIELD, x + 10, y + 11, 3, 4)
+            _rect(surf, C_BOOT, x + 4, y + 13, 3, 2)
+            _rect(surf, C_BOOT, x + 10, y + 13, 3, 2)
