@@ -24,14 +24,42 @@ class Room(object):
         self.enemies = []
         self.spawned = False
         self.cleared_reward = False
+        self._solid_cache = None
+        self._background_cache = [None, None]
+        self._has_animated_tiles = any(T_WATER in row for row in grid)
 
-    def draw(self, surf, phase=0):
+    def _invalidate_static_cache(self):
+        self._solid_cache = None
+        self._background_cache = [None, None]
+
+    def _build_background(self, phase):
+        bg = pygame.Surface((ROOM_W * TILE, ROOM_H * TILE))
         for j, row in enumerate(self.grid):
             for i, tid in enumerate(row):
-                draw_tile(surf, tid, i * TILE, j * TILE, phase)
+                draw_tile(bg, tid, i * TILE, j * TILE, phase)
+        # Matching the display pixel format makes repeated blits much cheaper
+        # on old SDL/Pygame builds.  convert() is safe after set_mode().
+        try:
+            bg = bg.convert()
+        except Exception:
+            pass
+        return bg
+
+    def draw(self, surf, phase=0):
+        # Almost the entire room is static.  Render it once and then blit one
+        # cached 256x240 image per frame instead of reissuing hundreds of
+        # pygame.draw calls.  Only water needs the second animation phase.
+        idx = (phase & 1) if self._has_animated_tiles else 0
+        bg = self._background_cache[idx]
+        if bg is None:
+            bg = self._build_background(idx)
+            self._background_cache[idx] = bg
+        surf.blit(bg, (0, 0))
 
     def solid_rects(self):
-        return room_solid_rects(self.grid)
+        if self._solid_cache is None:
+            self._solid_cache = room_solid_rects(self.grid)
+        return self._solid_cache
 
     def tile_for_side(self, side):
         i, j = SIDE_TILE[side]
@@ -48,6 +76,7 @@ class Room(object):
             lock_rect = pygame.Rect(i * TILE, j * TILE, TILE, TILE)
             if probe.colliderect(lock_rect):
                 self.grid[j][i] = T_DOOR
+                self._invalidate_static_cache()
                 player.keys -= 1
                 return True
         return False
