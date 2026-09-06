@@ -14,6 +14,13 @@ from utils import Timer, clamp
 
 DIR_UP, DIR_RIGHT, DIR_DOWN, DIR_LEFT = 0, 1, 2, 3
 
+# Procedural art is rendered into tiny colorkey surfaces once, then blitted.
+# This preserves the asset-free design while avoiding dozens of pygame.draw
+# calls per actor on every frame.
+_TRANSPARENT = (255, 0, 255)
+_PLAYER_FRAME_CACHE = {}
+_ENEMY_FRAME_CACHE = {}
+
 
 def dir_vec(d):
     return [(0, -1), (1, 0), (0, 1), (-1, 0)][d]
@@ -23,16 +30,25 @@ def _rect(surf, color, x, y, w, h):
     pygame.draw.rect(surf, color, (int(x), int(y), int(w), int(h)))
 
 
+def _overlaps_solid(test, solids):
+    # Explicit loop is noticeably cheaper than creating a generator for every
+    # movement axis on Python 2.7.
+    for solid in solids:
+        if test.colliderect(solid):
+            return True
+    return False
+
+
 def _move_rect_axis(owner, dx, dy, solids):
     if dx:
         test = owner.rect()
         test.x += int(round(dx))
-        if not any(test.colliderect(s) for s in solids):
+        if not _overlaps_solid(test, solids):
             owner.x += dx
     if dy:
         test = owner.rect()
         test.y += int(round(dy))
-        if not any(test.colliderect(s) for s in solids):
+        if not _overlaps_solid(test, solids):
             owner.y += dy
 
 
@@ -50,7 +66,7 @@ class Boomerang(object):
         return pygame.Rect(int(self.x) - 4, int(self.y) - 4, 8, 8)
 
     def update(self, player_pos):
-        self.spin = (self.spin + 1) % 12
+        self.spin = (self.spin + 2) % 12
         if not self.returning:
             dx, dy = dir_vec(self.dir)
             self.x += dx * BOOMERANG_SPEED
@@ -260,20 +276,33 @@ class Player(object):
 
     def draw(self, surf):
         sx, sy = int(self.x) - 8, int(self.y) - 9
-        step = 1 if self.moving and ((self.walk_clock // 6) % 2) else 0
+        step = 1 if self.moving and ((self.walk_clock // 3) % 2) else 0
         self._draw_shadow(surf, sx, sy)
 
         # Zelda-like flicker: skip the body on alternating invulnerability frames.
         body_visible = not self.invuln.active() or ((self.invuln.t // 3) % 2 == 0)
         if body_visible:
-            if self.dir == DIR_DOWN:
-                self._draw_front(surf, sx, sy, step)
-            elif self.dir == DIR_UP:
-                self._draw_back(surf, sx, sy, step)
-            elif self.dir == DIR_RIGHT:
-                self._draw_side(surf, sx, sy, True, step)
-            else:
-                self._draw_side(surf, sx, sy, False, step)
+            key = (self.dir, step)
+            frame = _PLAYER_FRAME_CACHE.get(key)
+            if frame is None:
+                frame = pygame.Surface((16, 16))
+                frame.fill(_TRANSPARENT)
+                frame.set_colorkey(_TRANSPARENT)
+                if self.dir == DIR_DOWN:
+                    self._draw_front(frame, 0, 0, step)
+                elif self.dir == DIR_UP:
+                    self._draw_back(frame, 0, 0, step)
+                elif self.dir == DIR_RIGHT:
+                    self._draw_side(frame, 0, 0, True, step)
+                else:
+                    self._draw_side(frame, 0, 0, False, step)
+                try:
+                    frame = frame.convert()
+                    frame.set_colorkey(_TRANSPARENT)
+                except Exception:
+                    pass
+                _PLAYER_FRAME_CACHE[key] = frame
+            surf.blit(frame, (sx, sy))
 
         if self.slash_timer.active():
             self.draw_sword(surf)
@@ -311,6 +340,55 @@ class Player(object):
             _rect(surf, blade, body.right + 14, cy - 1, 2, 2)
 
 
+def _get_enemy_frame(kind, flash):
+    key = (kind, bool(flash))
+    frame = _ENEMY_FRAME_CACHE.get(key)
+    if frame is not None:
+        return frame
+
+    frame = pygame.Surface((16, 16))
+    frame.fill(_TRANSPARENT)
+    frame.set_colorkey(_TRANSPARENT)
+    x = y = 0
+    main = WHITE if flash else (C_ENEMY1 if kind == 0 else C_ENEMY2)
+
+    # shadow
+    _rect(frame, (34, 68, 32), x + 3, y + 13, 11, 2)
+
+    if kind == 0:
+        _rect(frame, C_ENEMY_DARK, x + 4, y + 3, 8, 10)
+        _rect(frame, main, x + 3, y + 4, 10, 8)
+        _rect(frame, main, x + 5, y + 2, 6, 3)
+        _rect(frame, C_ENEMY_DARK, x + 1, y + 6, 3, 4)
+        _rect(frame, C_ENEMY_DARK, x + 12, y + 6, 3, 4)
+        _rect(frame, BLACK, x + 5, y + 5, 2, 2)
+        _rect(frame, BLACK, x + 10, y + 5, 2, 2)
+        _rect(frame, WHITE if flash else (236, 116, 74), x + 6, y + 8, 5, 3)
+        _rect(frame, C_ENEMY_DARK, x + 3, y + 12, 3, 2)
+        _rect(frame, C_ENEMY_DARK, x + 10, y + 12, 3, 2)
+    else:
+        _rect(frame, C_ENEMY_DARK, x + 4, y + 2, 9, 12)
+        _rect(frame, main, x + 3, y + 3, 10, 9)
+        pygame.draw.polygon(frame, main, [(x + 3, y + 5), (x, y + 3), (x + 3, y + 8)])
+        pygame.draw.polygon(frame, main, [(x + 13, y + 5), (x + 15, y + 3), (x + 13, y + 8)])
+        _rect(frame, C_ENEMY_DARK, x + 4, y + 3, 8, 2)
+        _rect(frame, BLACK, x + 5, y + 6, 2, 2)
+        _rect(frame, BLACK, x + 10, y + 6, 2, 2)
+        _rect(frame, C_ENEMY_DARK, x + 7, y + 9, 3, 1)
+        _rect(frame, C_SHIELD_TRIM, x + 9, y + 10, 5, 5)
+        _rect(frame, C_SHIELD, x + 10, y + 11, 3, 4)
+        _rect(frame, C_BOOT, x + 4, y + 13, 3, 2)
+        _rect(frame, C_BOOT, x + 10, y + 13, 3, 2)
+
+    try:
+        frame = frame.convert()
+        frame.set_colorkey(_TRANSPARENT)
+    except Exception:
+        pass
+    _ENEMY_FRAME_CACHE[key] = frame
+    return frame
+
+
 class Enemy(object):
     def __init__(self, x, y, kind=0):
         self.x, self.y = float(x), float(y)
@@ -344,7 +422,7 @@ class Enemy(object):
             return (vx / dist) * ENEMY_SPEED, (vy / dist) * ENEMY_SPEED
 
         # deterministic four-direction wandering keeps old-Pi CPU cost tiny.
-        cycle = (self.t // 70 + self.kind * 2) % 4
+        cycle = (self.t // 35 + self.kind * 2) % 4
         self.facing = [DIR_RIGHT, DIR_DOWN, DIR_LEFT, DIR_UP][cycle]
         dx, dy = dir_vec(self.facing)
         return dx * ENEMY_SPEED * 0.72, dy * ENEMY_SPEED * 0.72
@@ -352,7 +430,7 @@ class Enemy(object):
     def _hurt(self, damage, player):
         self.hp -= damage
         self.hurt_timer.start(ENEMY_HURT_TIME)
-        self.stun_timer.start(12)
+        self.stun_timer.start(6)
         dx = self.x - player.x
         dy = self.y - player.y
         mag = math.sqrt(dx * dx + dy * dy) or 1.0
@@ -395,36 +473,5 @@ class Enemy(object):
     def draw(self, surf):
         r = self.rect()
         flash = self.hurt_timer.active() and ((self.hurt_timer.t // 2) % 2 == 0)
-        main = WHITE if flash else (C_ENEMY1 if self.kind == 0 else C_ENEMY2)
-        x, y = r.centerx - 8, r.centery - 8
-
-        # shadow
-        _rect(surf, (34, 68, 32), x + 3, y + 13, 11, 2)
-
-        if self.kind == 0:
-            # Small red snouted crawler: chunky, readable 16x16 silhouette.
-            _rect(surf, C_ENEMY_DARK, x + 4, y + 3, 8, 10)
-            _rect(surf, main, x + 3, y + 4, 10, 8)
-            _rect(surf, main, x + 5, y + 2, 6, 3)
-            _rect(surf, C_ENEMY_DARK, x + 1, y + 6, 3, 4)
-            _rect(surf, C_ENEMY_DARK, x + 12, y + 6, 3, 4)
-            _rect(surf, BLACK, x + 5, y + 5, 2, 2)
-            _rect(surf, BLACK, x + 10, y + 5, 2, 2)
-            # square snout and feet
-            _rect(surf, (236, 116, 74) if not flash else WHITE, x + 6, y + 8, 5, 3)
-            _rect(surf, C_ENEMY_DARK, x + 3, y + 12, 3, 2)
-            _rect(surf, C_ENEMY_DARK, x + 10, y + 12, 3, 2)
-        else:
-            # Orange shield goblin/guard with ears and a helmet-like brow.
-            _rect(surf, C_ENEMY_DARK, x + 4, y + 2, 9, 12)
-            _rect(surf, main, x + 3, y + 3, 10, 9)
-            pygame.draw.polygon(surf, main, [(x + 3, y + 5), (x, y + 3), (x + 3, y + 8)])
-            pygame.draw.polygon(surf, main, [(x + 13, y + 5), (x + 16, y + 3), (x + 13, y + 8)])
-            _rect(surf, C_ENEMY_DARK, x + 4, y + 3, 8, 2)
-            _rect(surf, BLACK, x + 5, y + 6, 2, 2)
-            _rect(surf, BLACK, x + 10, y + 6, 2, 2)
-            _rect(surf, C_ENEMY_DARK, x + 7, y + 9, 3, 1)
-            _rect(surf, C_SHIELD_TRIM, x + 9, y + 10, 5, 5)
-            _rect(surf, C_SHIELD, x + 10, y + 11, 3, 4)
-            _rect(surf, C_BOOT, x + 4, y + 13, 3, 2)
-            _rect(surf, C_BOOT, x + 10, y + 13, 3, 2)
+        frame = _get_enemy_frame(self.kind, flash)
+        surf.blit(frame, (r.centerx - 8, r.centery - 8))
