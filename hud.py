@@ -2,6 +2,13 @@ from __future__ import division
 import pygame
 from settings import UI_BG, UI_FG, C_HEART, C_RUPEE, C_KEY, BLACK
 
+# The HUD changes only when hp/rupees/keys change.  Rendering fonts and heart
+# polygons every frame is surprisingly expensive on Pygame 1.9 / Pi 1, so we
+# keep a tiny cached 256x20 strip and simply blit it during normal gameplay.
+_HUD_KEY = None
+_HUD_SURFACE = None
+_HUD_FONT = None
+
 
 def _heart_outline(surf, x, y):
     # 8x7 pixel heart silhouette
@@ -26,20 +33,36 @@ def draw_hearts(surf, x, y, hp, max_hp):
             pygame.draw.rect(surf, C_HEART, (hx + 3, y + 5, 1, 2))
 
 
-def draw_stats_bar(surf, player):
-    # Compact, dark status strip inspired by 8-bit adventure HUDs.
-    pygame.draw.rect(surf, UI_BG, (0, 0, 256, 20))
-    pygame.draw.line(surf, (72, 72, 64), (0, 19), (255, 19))
-    draw_hearts(surf, 4, 5, player.hp, player.max_hp)
+def _build_stats_bar(player):
+    global _HUD_FONT
+    bar = pygame.Surface((256, 20))
+    pygame.draw.rect(bar, UI_BG, (0, 0, 256, 20))
+    pygame.draw.line(bar, (72, 72, 64), (0, 19), (255, 19))
+    draw_hearts(bar, 4, 5, player.hp, player.max_hp)
 
     # rupee icon
-    pygame.draw.polygon(surf, C_RUPEE, [(91, 4), (95, 7), (93, 14), (89, 14), (87, 7)])
+    pygame.draw.polygon(bar, C_RUPEE, [(91, 4), (95, 7), (93, 14), (89, 14), (87, 7)])
     # key icon
-    pygame.draw.rect(surf, C_KEY, (132, 5, 3, 9))
-    pygame.draw.rect(surf, C_KEY, (130, 4, 7, 3))
-    pygame.draw.rect(surf, C_KEY, (134, 11, 5, 2))
+    pygame.draw.rect(bar, C_KEY, (132, 5, 3, 9))
+    pygame.draw.rect(bar, C_KEY, (130, 4, 7, 3))
+    pygame.draw.rect(bar, C_KEY, (134, 11, 5, 2))
 
-    font = pygame.font.Font(None, 15)
-    surf.blit(font.render("x%02d" % player.rupees, True, UI_FG), (98, 5))
-    surf.blit(font.render("x%d" % player.keys, True, UI_FG), (142, 5))
-    surf.blit(font.render("Z:SWORD X:BOOM", True, (176, 176, 160)), (166, 5))
+    if _HUD_FONT is None:
+        _HUD_FONT = pygame.font.Font(None, 15)
+    bar.blit(_HUD_FONT.render("x%02d" % player.rupees, True, UI_FG), (98, 5))
+    bar.blit(_HUD_FONT.render("x%d" % player.keys, True, UI_FG), (142, 5))
+    bar.blit(_HUD_FONT.render("Z:SWORD X:BOOM", True, (176, 176, 160)), (166, 5))
+    try:
+        bar = bar.convert()
+    except Exception:
+        pass
+    return bar
+
+
+def draw_stats_bar(surf, player):
+    global _HUD_KEY, _HUD_SURFACE
+    key = (player.hp, player.max_hp, player.rupees, player.keys)
+    if key != _HUD_KEY or _HUD_SURFACE is None:
+        _HUD_KEY = key
+        _HUD_SURFACE = _build_stats_bar(player)
+    surf.blit(_HUD_SURFACE, (0, 0))
