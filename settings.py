@@ -4,20 +4,20 @@ from __future__ import division
 TILE = 16
 ROOM_W, ROOM_H = 16, 15             # 256x240 logical resolution
 BASE_W, BASE_H = ROOM_W*TILE, ROOM_H*TILE
-SCALE = 3                           # crisp integer scale; use 2 on older displays
-FPS = 60                            # use 30 on very old Raspberry Pi hardware
+SCALE = 2                           # old-Pi friendly default; use --scale 1 for maximum speed
+FPS = 30                            # 30 FPS keeps first-generation Pi hardware responsive
 
 # ---------- Gameplay ----------
-PLAYER_SPEED = 1.55                  # pixels/frame at 60 FPS
-ENEMY_SPEED = 0.60
-INVULN_TIME = 48                    # frames after taking damage
-SLASH_TIME = 10
-ATTACK_COOLDOWN = 8
-ENEMY_HURT_TIME = 10
-ENEMY_STUN_TIME = 28
-BOOMERANG_SPEED = 3.0
+PLAYER_SPEED = 3.10                  # pixels/frame at 30 FPS (same real-time speed as before)
+ENEMY_SPEED = 1.20
+INVULN_TIME = 24                    # frame counts halved to preserve real-time timing at 30 FPS
+SLASH_TIME = 5
+ATTACK_COOLDOWN = 4
+ENEMY_HURT_TIME = 5
+ENEMY_STUN_TIME = 14
+BOOMERANG_SPEED = 6.0
 BOOMERANG_RANGE = TILE * 6
-ROOM_BANNER_TIME = 75
+ROOM_BANNER_TIME = 38
 
 # ---------- NES-inspired palette ----------
 BLACK = (8, 8, 8)
