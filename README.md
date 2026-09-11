@@ -1,67 +1,70 @@
-# Tiny Top‑Down Adventure (Raspberry Pi / Pygame)
+# Tiny Top-Down Adventure — Modern Refresh
 
-A lightweight, NES‑style top‑down adventure game engine written for old Raspberry Pi (Raspbian Wheezy) and Pygame 1.9.x.  
-It avoids external assets and draws everything procedurally, so you can just run it.
+A lightweight, procedural, NES-inspired top-down adventure for Raspberry Pi / Pygame. It keeps the original project's 256×240 logical resolution and external-asset-free approach, but upgrades the character art, enemies, environment tiles, combat feel, room logic, and world layout.
 
-> ⚠️ **No Nintendo IP**: This is an original engine inspired by classic room‑scrolling games. No copyrighted names, maps, or sprites are included.
+The hero and creatures are **original procedural pixel art inspired by the visual language of early 8-bit adventure games**; this project does not ship Nintendo artwork or copied sprites.
+
+## What's new
+
+- A recognizable 16×16 pixel hero instead of a colored square: cap, face, tunic, belt, boots, shield, directional poses, and a two-frame walk animation.
+- More detailed procedural enemies with distinct silhouettes and hit flashing.
+- Richer grass, trees, bushes, rocks, water, sand, stone walls, doors, and locks.
+- Fixed room transitions so the player cannot enter missing rooms.
+- A connected seven-room overworld with a key-gated hidden shrine.
+- Correct one-hit-per-sword-swing behavior instead of damaging on every overlapping frame.
+- Diagonal movement normalization.
+- Enemy chase/wander behavior, knockback, stun, and simple drops.
+- Boomerang now stuns enemies and returns to the player rather than instantly deleting them.
+- Heart pickups, room-clear rewards, improved HUD, room-name banners, pause screen, and game-over/restart flow.
+- `--scale N` command-line option for modern displays while retaining integer pixel scaling.
+- Still uses only Pygame primitives — no image files are required.
 
 ## Requirements
 
-- Raspberry Pi running Raspbian Wheezy (or newer).
-- Python 2.7 **or** Python 3.x. (Works on both; Python 2.7 + Pygame 1.9.1 was common on Wheezy.)
-- Pygame 1.9.x (or newer):
-  ```bash
-  # Python 2.7 (typical Wheezy)
-  sudo apt-get update
-  sudo apt-get install python-pygame
+- Python 2.7 or Python 3.x
+- Pygame 1.9.x or newer
 
-  # Or for Python 3 if available on your system
-  sudo apt-get install python3-pygame
-  ```
+This intentionally avoids f-strings, dataclasses, type annotations, NumPy, and external assets so it remains suitable for older Raspberry Pi installations.
 
 ## Run
 
-From this folder:
 ```bash
-# Python 2.7
 python main.py
-
-# or Python 3
+# or
 python3 main.py
 ```
 
-Controls (keyboard):
-- Arrow keys: Move
-- Z: Melee slash
-- X: Use item (boomerang)
-- Enter: Pause menu (shows stats), Escape: Quit
+For an older Pi:
 
-Performance tips on old Pi:
-- In `settings.py`, lower `FPS` to 30, set `SCALE=2`, and keep windowed mode.
-- Use the `--no-audio` flag if mixer initialization causes issues:
-  ```bash
-  python main.py --no-audio
-  ```
-
-## Project Layout
-
-```
-zelda_like_pi/
-├── main.py            # Entry point / Game loop
-├── settings.py        # Screen, colors, constants
-├── world.py           # Rooms, tile map, transitions
-├── tilemap.py         # Tile definitions & utilities
-├── sprites.py         # Player, enemies, items
-├── hud.py             # HUD (hearts, rupees)
-├── utils.py           # Helpers (rect collisions, timing)
-└── README.md
+```bash
+python main.py --no-audio --scale 2
 ```
 
-## Notes
+## Controls
 
-- Room‑based scrolling (screen‑by‑screen) like early console adventure games.
-- 16x16 tiles, base resolution 256x240; scaled up for modern screens via `SCALE`.
-- Simple combat, enemies with basic AI, keys/doors, and a boomerang.
-- Everything drawn with Pygame primitives to avoid external assets.
+- Arrow keys — move
+- Z or Left Ctrl — sword
+- X or Left Alt — boomerang
+- Enter — pause / resume
+- R — restart after game over
+- Escape — quit
 
-Have fun hacking on it—add new enemies, items, shops, dungeons, and puzzles!
+## Project layout
+
+```text
+main.py       game loop, transitions, state, pickups, restart
+settings.py   resolution, tuning, palette
+world.py      room layouts, exits, locked door, pickups
+tilemap.py    procedural terrain pixel art and collision
+sprites.py    hero, enemies, sword, boomerang, combat
+hud.py        hearts and inventory strip
+utils.py      small helpers and frame timers
+```
+
+## Design goal
+
+The refresh is deliberately closer to an early-console adventure game than to a modern high-resolution RPG: low logical resolution, hard pixel edges, limited colors, readable silhouettes, simple room-to-room exploration, and very low CPU/GPU requirements.
+
+## Old Raspberry Pi performance
+
+The default is tuned for older hardware at 30 FPS and 2x scale. Static room art, collision geometry, HUD text, and actor frames are cached. For the slowest Pi models, use `python main.py --scale 1 --no-audio`; scale 1 skips the per-frame software scaling pass entirely.
